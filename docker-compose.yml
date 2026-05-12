@@ -1,0 +1,21 @@
+services:
+  backend:
+    build: ./backend
+    env_file: .env
+    restart: unless-stopped
+    # Not exposed publicly — only reachable by the frontend container via nginx proxy
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+# To run:
+#   cp .env.example .env   # then fill in credentials
+#   docker compose up -d --build
+#
+# Access at http://<your-proxmox-vm-ip>:3000
+# To update after code changes: docker compose up -d --build
