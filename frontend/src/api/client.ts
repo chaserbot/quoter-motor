@@ -27,6 +27,7 @@ export interface FlexElement {
   elementTypeName?: string;
   categoryId?: string;
   categoryName?: string;
+  className?: string;
   defaultPrice?: number;
   [key: string]: unknown;
 }
@@ -54,6 +55,8 @@ export interface ApprovedItem {
   note?: string;
   sort_order?: number;
   class_name?: string;
+  old_item?: Record<string, unknown>;
+  approved_name?: string;
 }
 
 export interface CreateQuoteRequest {
@@ -73,24 +76,101 @@ export interface CreateQuoteResponse {
   failures: unknown[];
 }
 
+export interface QuoteValidationIssue {
+  level: "error" | "warning" | "info";
+  message: string;
+  item_index?: number;
+}
+
+export interface QuoteDiffRow {
+  index: number;
+  old_name: string;
+  new_name: string;
+  quantity: number;
+  old_unit_price?: number;
+  new_unit_price?: number;
+  old_extended?: number;
+  new_extended?: number;
+  delta?: number;
+  note?: string;
+}
+
+export interface QuotePreviewResponse {
+  valid: boolean;
+  issues: QuoteValidationIssue[];
+  diff: QuoteDiffRow[];
+  planned_operations: string[];
+  totals: {
+    old_total?: number;
+    new_total?: number;
+    delta?: number;
+  };
+}
+
 // ---------------------------------------------------------------- helpers
+
+function unwrapField(value: unknown): unknown {
+  if (
+    value &&
+    typeof value === "object" &&
+    "data" in value &&
+    Object.keys(value as Record<string, unknown>).length <= 3
+  ) {
+    return (value as { data?: unknown }).data;
+  }
+  return value;
+}
+
+function readString(item: Record<string, unknown>, keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = unwrapField(item[key]);
+    if (typeof value === "string" && value.trim()) return value;
+    if (value && typeof value === "object") {
+      const obj = value as Record<string, unknown>;
+      const display = obj.preferredDisplayString ?? obj.name ?? obj.description;
+      if (typeof display === "string" && display.trim()) return display;
+    }
+  }
+  return undefined;
+}
+
+function readNumber(item: Record<string, unknown>, keys: string[]): number | undefined {
+  for (const key of keys) {
+    const value = unwrapField(item[key]);
+    if (value === null || value === undefined || value === "") continue;
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return undefined;
+}
 
 export function itemName(item: Record<string, unknown>): string {
   return (
-    (item.elementName as string) ||
-    (item.name as string) ||
-    (item.description as string) ||
+    readString(item, ["elementName", "name", "description", "resourceName"]) ??
     "Unknown item"
   );
 }
 
 export function itemQty(item: Record<string, unknown>): number {
-  return Number(item.quantity) || 1;
+  return readNumber(item, ["quantity", "qty"]) ?? 1;
 }
 
 export function itemRate(item: Record<string, unknown>): number | undefined {
-  const v = item.unitPrice ?? item.rate ?? item.defaultPrice;
-  return v !== undefined ? Number(v) : undefined;
+  return readNumber(item, [
+    "priceEach",
+    "unitPrice",
+    "rate",
+    "defaultPrice",
+    "price",
+  ]);
+}
+
+export function itemExtended(item: Record<string, unknown>): number | undefined {
+  return readNumber(item, ["priceExtended", "extendedPrice", "totalPrice"]);
+}
+
+export function itemNote(item: Record<string, unknown>): string | undefined {
+  return readString(item, ["note", "notes", "description"]);
 }
 
 // ---------------------------------------------------------------- API calls
@@ -110,6 +190,11 @@ export async function searchQuotes(q: string) {
 export async function searchInventory(q: string): Promise<FlexElement[]> {
   const { data } = await api.get("/inventory/search", { params: { q } });
   return data.items as FlexElement[];
+}
+
+export async function previewQuote(payload: CreateQuoteRequest): Promise<QuotePreviewResponse> {
+  const { data } = await api.post<QuotePreviewResponse>("/quotes/preview", payload);
+  return data;
 }
 
 export async function createQuote(payload: CreateQuoteRequest): Promise<CreateQuoteResponse> {
