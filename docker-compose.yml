@@ -3,6 +3,9 @@ services:
     build: ./backend
     env_file: .env
     restart: unless-stopped
+    volumes:
+      - ./backend/app:/app/app  # live reload without rebuild during dev
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     # Not exposed publicly — only reachable by the frontend container via nginx proxy
 
   frontend:

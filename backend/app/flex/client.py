@@ -1,7 +1,6 @@
 import httpx
 import logging
 import time
-import asyncio
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -12,7 +11,6 @@ QUOTE_DEFINITION_IDS = {
     "a29f8b12-d210-11e1-bba1-00e08175e43e",  # Quick Quote
 }
 
-# Element types that are NOT inventory (quotes, manifests, folders, etc.)
 NON_INVENTORY_DEFINITIONS = {
     "9bfb850c-b117-11df-b8d5-00e08175e43e",  # Quote
     "6f36f740-a565-11e3-a128-00259000d29a",  # Sales Quote
@@ -46,12 +44,10 @@ class FlexAPIError(Exception):
 
 
 # ---------------------------------------------------------------------------
-# Module-level cache shared across all request lifetimes
+# Module-level cache for quotes (element/search). Inventory uses live API calls.
 # ---------------------------------------------------------------------------
 _cache: dict = {
-    "all_elements": None,   # every element from Flex
-    "quotes": None,         # filtered to quote types only
-    "inventory": None,      # filtered to non-document types (actual gear/labor)
+    "quotes": None,
     "fetched_at": 0.0,
     "loading": False,
 }
@@ -81,16 +77,16 @@ class FlexClient:
             )
         return resp.json() if resp.content else {}
 
-    # ---------------------------------------------------------------- bulk load
+    # ---------------------------------------------------------------- quote cache
 
     async def _load_all_elements(self) -> list[dict]:
-        """Fetch every element from Flex in large pages (~10 API calls)."""
+        """Fetch all financial elements (quotes, invoices, events) from Flex."""
         results: list[dict] = []
         page = 0
         page_size = 1000
         while True:
             data = await self._request("GET", "/api/element/search", params={
-                "searchString": "",
+                "searchText": "",
                 "size": page_size,
                 "page": page,
             })
@@ -104,31 +100,26 @@ class FlexClient:
         return results
 
     async def warm_cache(self, ttl: int = 300) -> None:
-        """Load and split all elements into quotes vs inventory. Cached for ttl seconds."""
+        """Load and cache quotes from element/search. Cached for ttl seconds."""
         if _cache["loading"]:
             return
         now = time.time()
-        if _cache["all_elements"] is not None and now - _cache["fetched_at"] < ttl:
+        if _cache["quotes"] is not None and now - _cache["fetched_at"] < ttl:
             return
 
         _cache["loading"] = True
         try:
             all_elements = await self._load_all_elements()
             quotes = []
-            inventory = []
             for el in all_elements:
-                def_id = el.get("definitionId", "")
-                def_name = el.get("definitionName", "")
+                def_id = el.get("definitionId") or ""
+                def_name = el.get("definitionName") or ""
                 if def_id in QUOTE_DEFINITION_IDS or def_name in ("Quote", "Sales Quote", "Quick Quote"):
                     quotes.append(el)
-                elif def_id not in NON_INVENTORY_DEFINITIONS and def_name not in NON_INVENTORY_DEFINITIONS:
-                    inventory.append(el)
 
-            _cache["all_elements"] = all_elements
             _cache["quotes"] = quotes
-            _cache["inventory"] = inventory
             _cache["fetched_at"] = time.time()
-            logger.info("Cache warmed: %d quotes, %d inventory items", len(quotes), len(inventory))
+            logger.info("Cache warmed: %d quotes", len(quotes))
         finally:
             _cache["loading"] = False
 
@@ -149,48 +140,165 @@ class FlexClient:
 
     async def search_documents(self, query: str, ttl: int = 300) -> list[dict]:
         await self.warm_cache(ttl)
-        return self._search_cached(_cache["quotes"] or [], query)[:50]
+        results = self._search_cached(_cache["quotes"] or [], query)
+        seen: set[str] = set()
+        unique = []
+        for r in results:
+            rid = r.get("id")
+            if rid and rid not in seen:
+                seen.add(rid)
+                unique.append(r)
+        return unique[:50]
 
     async def get_document(self, doc_id: str) -> dict:
-        return await self._request("GET", f"/api/element/{doc_id}/header-data")
+        HEADER_CODES = "name,documentNumber,plannedStartDate,plannedEndDate,statusId,clientId,clientCompany,totalPrice,locationId"
+        raw = await self._request(
+            "GET",
+            f"/api/element/{doc_id}/header-data",
+            params={"codeList": HEADER_CODES},
+        )
+        return self._normalize_document(doc_id, raw)
+
+    def _normalize_document(self, doc_id: str, raw: dict) -> dict:
+        """Flatten Flex's {fieldType, data} envelope into a plain dict."""
+        def extract(v):
+            if isinstance(v, dict) and "data" in v:
+                return v["data"]
+            return v
+
+        result: dict = {"id": doc_id}
+        for key, value in raw.items():
+            result[key] = extract(value)
+
+        client = result.get("clientId")
+        if isinstance(client, dict):
+            result["clientName"] = client.get("preferredDisplayString") or client.get("name")
+            result["clientId"] = client.get("id")
+
+        result.setdefault("description", result.pop("name", None))
+        result.setdefault("startDateTime", result.pop("plannedStartDate", None))
+        result.setdefault("endDateTime", result.pop("plannedEndDate", None))
+
+        return result
 
     async def get_document_elements(self, document_id: str) -> list[dict]:
         data = await self._request(
             "GET",
             f"/api/financial-document-line-item/{document_id}/row-data/",
-            params={"codeList": "RESOURCE,LABOR,MISC"},
+            params=[
+                ("codeList", "type"),
+                ("codeList", "quantity"),
+                ("codeList", "name"),
+                ("codeList", "note"),
+                ("codeList", "priceEach"),
+                ("codeList", "priceExtended"),
+                ("codeList", "pricingModel"),
+                ("codeList", "resourceId"),
+                ("node", "root"),
+            ],
         )
         if isinstance(data, list):
-            return data
-        return data.get("content", data.get("rows", data.get("lineItems", [])))
+            rows = data
+        else:
+            rows = data.get("content", data.get("rows", data.get("lineItems", data.get("rowData", []))))
+        logger.info("row-data: %d top-level rows", len(rows))
+        if rows:
+            return self._flatten_line_items(rows)
+        return []
 
-    # ---------------------------------------------------------- inventory
+    def _flatten_line_items(self, rows: list[dict]) -> list[dict]:
+        """Recursively flatten subtotal tree into a flat list of resource/labor items."""
+        result = []
+        for row in rows:
+            children = row.get("children") or []
+            if children:
+                result.extend(self._flatten_line_items(children))
+            elif row.get("resourceId") or row.get("lineItemType") in ("resource", "labor", "misc"):
+                result.append(row)
+        return result
 
-    async def get_all_elements(self, ttl: int = 300) -> list[dict]:
-        await self.warm_cache(ttl)
-        return _cache["inventory"] or []
+    # ---------------------------------------------------------- inventory model lookup
 
-    async def search_elements(self, query: str, ttl: int = 300) -> list[dict]:
-        await self.warm_cache(ttl)
-        return self._search_cached(_cache["inventory"] or [], query)[:50]
+    async def get_inventory_model(self, resource_id: str) -> dict | None:
+        """
+        Look up a single inventory model by ID via managed-resource/identity.
+        This is the correct endpoint for resolving resourceId values from quote line items.
+        """
+        try:
+            data = await self._request(
+                "GET",
+                f"/api/managed-resource/{resource_id}/identity",
+            )
+            if data and data.get("name") and not data.get("deleted"):
+                return data
+            return None
+        except FlexAPIError as e:
+            if e.status_code in (404, 500):
+                return None
+            raise
+
+    async def search_inventory(self, query: str) -> list[dict]:
+        """
+        Search inventory models via /api/inventory-model/search.
+        Requires at least 2 characters.
+        """
+        q = query.strip()
+        if len(q) < 2:
+            return []
+        data = await self._request(
+            "GET",
+            "/api/inventory-model/search",
+            params={"searchText": q, "size": 50},
+        )
+        items = data.get("content", data) if isinstance(data, dict) else data
+        return items if isinstance(items, list) else []
 
     # ---------------------------------------------------------- creation
 
-    async def create_document(self, payload: dict) -> dict:
-        return await self._request("POST", "/api/element", json=payload)
+    DEFAULT_CURRENCY_ID = "911e3d4c-aedc-11df-b8d5-00e08175e43e"  # US Dollar
 
-    async def add_line_item(self, document_id: str, resource_id: str, payload: dict) -> dict:
+    # Map managed-resource className → managedResourceLineItemType query param
+    CLASS_TO_LINE_ITEM_TYPE = {
+        "INVENTORY_MODEL": "inventory-model",
+        "SERVICE_OFFERING": "service-offering",
+        "SERIAL_UNIT": "serial-unit",
+        "CONTACT": "contact",
+    }
+
+    async def create_document(self, payload: dict) -> dict:
+        doc = await self._request("POST", "/api/element", json=payload)
+        doc_id = doc.get("elementId") or doc.get("id")
+        if doc_id:
+            await self._request(
+                "POST",
+                f"/api/element/{doc_id}/header-update",
+                json={"fieldType": "currencyId", "payloadValue": self.DEFAULT_CURRENCY_ID},
+            )
+        return doc
+
+    async def add_line_item(
+        self,
+        document_id: str,
+        resource_id: str,
+        quantity: float,
+        class_name: str = "INVENTORY_MODEL",
+    ) -> dict:
+        line_item_type = self.CLASS_TO_LINE_ITEM_TYPE.get(class_name, "inventory-model")
         return await self._request(
             "POST",
-            f"/api/financial-document-line-item/{document_id}/add-resource/{resource_id}",
-            json=payload,
+            f"/api/line-item/{document_id}/add-resource/{resource_id}",
+            params={
+                "resourceParentId": document_id,
+                "managedResourceLineItemType": line_item_type,
+                "quantity": quantity,
+            },
         )
 
     # ---------------------------------------------------------- health
 
     async def test_connection(self) -> dict:
         try:
-            data = await self._request("GET", "/api/element/search", params={"searchString": "", "size": 1})
+            data = await self._request("GET", "/api/element/search", params={"searchText": "", "size": 1})
             total = data.get("totalElements", "?") if isinstance(data, dict) else "?"
             return {"ok": True, "total_elements": total}
         except FlexAPIError as e:

@@ -43,7 +43,7 @@ export interface MatchResult {
 export interface MatchResponse {
   document: FlexDocument;
   matches: MatchResult[];
-  inventory_size: number;
+  inventory_size?: number;
   needs_review_count: number;
 }
 
@@ -53,6 +53,7 @@ export interface ApprovedItem {
   unit_price?: number;
   note?: string;
   sort_order?: number;
+  class_name?: string;
 }
 
 export interface CreateQuoteRequest {

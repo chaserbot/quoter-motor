@@ -34,6 +34,7 @@ export function Details() {
           element_id: r.approved_element!.id,
           quantity: r.override_qty ?? itemQty(r.old_item),
           sort_order: i,
+          class_name: (r.approved_element!.className as string) ?? undefined,
         })),
       });
 

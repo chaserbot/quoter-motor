@@ -116,8 +116,11 @@ export function Home() {
                     <span className="font-mono text-sm text-sky-400">
                       {doc.documentNumber ?? doc.id}
                     </span>
-                    {doc.description && (
-                      <span className="ml-3 text-sm text-slate-300">{doc.description}</span>
+                    {(doc.name as string) && (
+                      <span className="ml-3 text-sm text-slate-300">{doc.name as string}</span>
+                    )}
+                    {(doc.definitionName as string) && (
+                      <span className="ml-2 text-xs text-slate-500">({doc.definitionName as string})</span>
                     )}
                     {doc.clientName && (
                       <span className="ml-2 text-xs text-slate-500">— {doc.clientName}</span>
