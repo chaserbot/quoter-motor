@@ -1,18 +1,8 @@
 import httpx
 import logging
-from datetime import datetime, timedelta
-from typing import Any, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
-
-# Flex returns different field names depending on version / config.
-# We try each in order and take the first hit.
-_TOKEN_FIELDS = ("id", "token", "accessToken", "sessionToken")
-_AUTH_HEADERS = ("X-Auth-Token", "Authorization")  # We'll try X-Auth-Token first
-
-
-class FlexAuthError(Exception):
-    pass
 
 
 class FlexAPIError(Exception):
@@ -23,170 +13,105 @@ class FlexAPIError(Exception):
 
 
 class FlexClient:
-    def __init__(self, base_url: str, username: str, password: str):
+    def __init__(self, base_url: str, api_key: str):
+        # base_url = https://clearlamp.flexrentalsolutions.com/f5
         self.base_url = base_url.rstrip("/")
-        self.username = username
-        self.password = password
-        self._token: Optional[str] = None
-        self._token_expires: Optional[datetime] = None
-        self._auth_header: str = "X-Auth-Token"
+        self._headers = {
+            "X-Auth-Token": api_key,
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        }
         self._http = httpx.AsyncClient(timeout=30.0, follow_redirects=True)
 
-    # ------------------------------------------------------------------ auth
+    # ---------------------------------------------------------------- core
 
-    async def _authenticate(self) -> str:
-        payload = {"username": self.username, "password": self.password}
-        try:
-            resp = await self._http.post(
-                f"{self.base_url}/authenticate",
-                json=payload,
-                headers={"Content-Type": "application/json", "Accept": "application/json"},
-            )
-        except httpx.ConnectError as e:
-            raise FlexAuthError(f"Cannot reach Flex API at {self.base_url}: {e}") from e
-
-        if resp.status_code in (401, 403):
-            raise FlexAuthError("Flex authentication failed — check FLEX_USERNAME and FLEX_PASSWORD")
-
-        if not resp.is_success:
-            raise FlexAuthError(
-                f"Flex authenticate returned {resp.status_code}: {resp.text[:300]}"
-            )
-
-        data = resp.json()
-        token = None
-        for field in _TOKEN_FIELDS:
-            if data.get(field):
-                token = data[field]
-                break
-
-        if not token:
-            raise FlexAuthError(
-                f"Could not find token in auth response. Keys returned: {list(data.keys())}"
-            )
-
-        logger.info("Flex authentication successful")
-        return token
-
-    async def _get_token(self) -> str:
-        if not self._token or (
-            self._token_expires and datetime.now() >= self._token_expires
-        ):
-            self._token = await self._authenticate()
-            # Flex tokens typically last 1 hour; refresh 5 min early to be safe
-            self._token_expires = datetime.now() + timedelta(minutes=55)
-        return self._token
-
-    # --------------------------------------------------------------- requests
-
-    async def _request(
-        self,
-        method: str,
-        path: str,
-        retry_auth: bool = True,
-        **kwargs: Any,
-    ) -> Any:
-        token = await self._get_token()
-        headers = kwargs.pop("headers", {})
-        headers[self._auth_header] = token
-        headers["Accept"] = "application/json"
-
+    async def _request(self, method: str, path: str, **kwargs) -> Any:
         url = f"{self.base_url}{path}"
+        headers = {**self._headers, **kwargs.pop("headers", {})}
         resp = await self._http.request(method, url, headers=headers, **kwargs)
-
-        if resp.status_code == 401 and retry_auth:
-            # Token may have expired server-side; force refresh once
-            self._token = None
-            token = await self._get_token()
-            headers[self._auth_header] = token
-            resp = await self._http.request(method, url, headers=headers, **kwargs)
 
         if not resp.is_success:
             raise FlexAPIError(
-                f"Flex API {method} {path} returned {resp.status_code}",
+                f"Flex API {method} {path} → {resp.status_code}",
                 status_code=resp.status_code,
                 body=resp.text[:500],
             )
+        return resp.json() if resp.content else {}
 
-        # Some endpoints return empty body on success
-        if not resp.content:
-            return {}
-
-        return resp.json()
-
-    # ------------------------------------------------------------ pagination
-
-    async def _paginate(self, path: str, params: dict, page_size: int = 200) -> list[dict]:
-        """Fetch all pages from a Flex list endpoint."""
+    async def _paginate(self, path: str, params: dict, page_size: int = 100) -> list[dict]:
         results: list[dict] = []
-        offset = 0
+        page = 0
         while True:
-            params = {**params, "limit": page_size, "offset": offset}
-            data = await self._request("GET", path, params=params)
-
-            # Flex can return a list or an object with a results key
+            data = await self._request("GET", path, params={**params, "size": page_size, "page": page})
             if isinstance(data, list):
-                batch = data
+                results.extend(data)
+                if len(data) < page_size:
+                    break
             elif isinstance(data, dict):
-                batch = data.get("results", data.get("content", []))
+                batch = data.get("content", data.get("results", []))
+                results.extend(batch)
+                if data.get("last", True) or len(batch) < page_size:
+                    break
             else:
                 break
-
-            results.extend(batch)
-            if len(batch) < page_size:
-                break
-            offset += page_size
-
+            page += 1
         return results
 
-    # --------------------------------------------------------- document API
+    # ---------------------------------------------------------- quotes
+
+    async def search_documents(self, query: str) -> list[dict]:
+        data = await self._request("GET", "/api/element/search", params={
+            "searchString": query,
+            "size": 20,
+        })
+        items = data.get("content", data) if isinstance(data, dict) else data
+        return [x for x in items if x.get("definitionName") == "Quote"]
 
     async def get_document(self, doc_id: str) -> dict:
-        return await self._request("GET", f"/document/{doc_id}")
-
-    async def search_documents(self, document_number: str) -> list[dict]:
-        """Search for a document by its human-readable quote number."""
-        return await self._paginate(
-            "/document",
-            {"filter": f"documentNumber::=={document_number}"},
-        )
+        return await self._request("GET", f"/api/element/{doc_id}/header-data")
 
     async def get_document_elements(self, document_id: str) -> list[dict]:
-        """Return all line items for a document."""
-        return await self._paginate(
-            "/documentElement",
-            {"filter": f"parentId::=={document_id}"},
+        data = await self._request(
+            "GET",
+            f"/api/financial-document-line-item/{document_id}/row-data/",
+            params={"codeList": "RESOURCE,LABOR,MISC"},
         )
+        if isinstance(data, list):
+            return data
+        return data.get("content", data.get("rows", data.get("lineItems", [])))
 
-    # --------------------------------------------------------- inventory API
+    # ---------------------------------------------------------- inventory
 
     async def get_all_elements(self) -> list[dict]:
-        """Return all active inventory elements (the catalog)."""
-        return await self._paginate(
-            "/element",
-            {"filter": "active::==true"},
-        )
+        return await self._paginate("/api/element/search", {"searchString": ""})
 
-    async def get_element(self, element_id: str) -> dict:
-        return await self._request("GET", f"/element/{element_id}")
+    async def search_elements(self, query: str) -> list[dict]:
+        data = await self._request("GET", "/api/element/search", params={
+            "searchString": query,
+            "size": 50,
+        })
+        return data.get("content", data) if isinstance(data, dict) else data
 
-    # --------------------------------------------------- document creation
+    # ---------------------------------------------------------- creation
 
     async def create_document(self, payload: dict) -> dict:
-        return await self._request("POST", "/document", json=payload)
+        return await self._request("POST", "/api/element", json=payload)
 
-    async def create_document_element(self, payload: dict) -> dict:
-        return await self._request("POST", "/documentElement", json=payload)
+    async def add_line_item(self, document_id: str, resource_id: str, payload: dict) -> dict:
+        return await self._request(
+            "POST",
+            f"/api/financial-document-line-item/{document_id}/add-resource/{resource_id}",
+            json=payload,
+        )
 
-    # ---------------------------------------------------- connection check
+    # ---------------------------------------------------------- health
 
     async def test_connection(self) -> dict:
-        """Verify credentials and return basic info. Used by the UI health check."""
         try:
-            token = await self._get_token()
-            return {"ok": True, "token_preview": token[:8] + "…"}
-        except FlexAuthError as e:
-            return {"ok": False, "error": str(e)}
+            data = await self._request("GET", "/api/element/search", params={"searchString": "test", "size": 1})
+            return {"ok": True, "sample": data}
+        except FlexAPIError as e:
+            return {"ok": False, "error": str(e), "status_code": e.status_code, "body": e.body}
         except Exception as e:
             return {"ok": False, "error": str(e)}
 

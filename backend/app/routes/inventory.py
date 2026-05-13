@@ -3,7 +3,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.config import get_settings, Settings
-from app.flex.client import FlexClient, FlexAuthError, FlexAPIError
+from app.flex.client import FlexClient, FlexAPIError
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/inventory", tags=["inventory"])
@@ -14,9 +14,9 @@ _cache: dict = {"data": None, "fetched_at": 0.0}
 
 def get_flex_client(settings: Settings = Depends(get_settings)) -> FlexClient:
     return FlexClient(
-        base_url=settings.flex_base_url,
-        username=settings.flex_username,
-        password=settings.flex_password,
+        base_url=settings.flex_base_url, api_key=settings.flex_api_key,
+        
+        
     )
 
 
@@ -45,7 +45,7 @@ async def list_inventory(
         _cache["data"] = items
         _cache["fetched_at"] = now
         return {"items": items, "count": len(items), "cached": False, "cache_age_seconds": 0}
-    except FlexAuthError as e:
+    except FlexAPIError as e:
         raise HTTPException(status_code=401, detail=str(e))
     except FlexAPIError as e:
         raise HTTPException(status_code=e.status_code or 502, detail=str(e))
@@ -66,7 +66,7 @@ async def search_inventory(
             items = await client.get_all_elements()
             _cache["data"] = items
             _cache["fetched_at"] = now
-        except (FlexAuthError, FlexAPIError) as e:
+        except (FlexAPIError) as e:
             raise HTTPException(status_code=502, detail=str(e))
         finally:
             await client.close()

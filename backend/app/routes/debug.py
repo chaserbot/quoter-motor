@@ -15,9 +15,9 @@ router = APIRouter(prefix="/api/debug", tags=["debug"])
 
 def get_flex_client(settings: Settings = Depends(get_settings)) -> FlexClient:
     return FlexClient(
-        base_url=settings.flex_base_url,
-        username=settings.flex_username,
-        password=settings.flex_password,
+        base_url=settings.flex_base_url, api_key=settings.flex_api_key,
+        
+        
     )
 
 

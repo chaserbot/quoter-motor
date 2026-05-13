@@ -4,7 +4,7 @@ from typing import Optional, Any
 import logging
 
 from app.config import get_settings, Settings
-from app.flex.client import FlexClient, FlexAuthError, FlexAPIError
+from app.flex.client import FlexClient, FlexAPIError
 from app.matching.engine import match_all_items
 
 logger = logging.getLogger(__name__)
@@ -15,9 +15,9 @@ router = APIRouter(prefix="/api/quotes", tags=["quotes"])
 
 def get_flex_client(settings: Settings = Depends(get_settings)) -> FlexClient:
     return FlexClient(
-        base_url=settings.flex_base_url,
-        username=settings.flex_username,
-        password=settings.flex_password,
+        base_url=settings.flex_base_url, api_key=settings.flex_api_key,
+        
+        
     )
 
 
@@ -65,7 +65,7 @@ async def search_quotes(
     try:
         results = await client.search_documents(q)
         return {"results": results}
-    except FlexAuthError as e:
+    except FlexAPIError as e:
         raise HTTPException(status_code=401, detail=str(e))
     except FlexAPIError as e:
         raise HTTPException(status_code=e.status_code or 502, detail=str(e))
@@ -87,7 +87,7 @@ async def get_source_quote(
             elements=elements,
             element_count=len(elements),
         )
-    except FlexAuthError as e:
+    except FlexAPIError as e:
         raise HTTPException(status_code=401, detail=str(e))
     except FlexAPIError as e:
         if e.status_code == 404:
@@ -135,7 +135,7 @@ async def match_quote_items(
             "needs_review_count": needs_review_count,
         }
 
-    except FlexAuthError as e:
+    except FlexAPIError as e:
         raise HTTPException(status_code=401, detail=str(e))
     except FlexAPIError as e:
         raise HTTPException(status_code=e.status_code or 502, detail=str(e))
@@ -210,7 +210,7 @@ async def create_quote(
             "failures": failed,
         }
 
-    except FlexAuthError as e:
+    except FlexAPIError as e:
         raise HTTPException(status_code=401, detail=str(e))
     except FlexAPIError as e:
         raise HTTPException(status_code=e.status_code or 502, detail=str(e))
