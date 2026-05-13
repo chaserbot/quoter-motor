@@ -11,13 +11,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/quotes", tags=["quotes"])
 
 
-# ------------------------------------------------------------------ deps
-
 def get_flex_client(settings: Settings = Depends(get_settings)) -> FlexClient:
     return FlexClient(base_url=settings.flex_base_url, api_key=settings.flex_api_key)
 
-
-# ---------------------------------------------------------------- schemas
 
 class SourceQuoteResponse(BaseModel):
     document: dict[str, Any]
@@ -35,7 +31,9 @@ class ApprovedItem(BaseModel):
     unit_price: Optional[float] = None
     note: Optional[str] = None
     sort_order: Optional[int] = None
-    class_name: Optional[str] = None  # INVENTORY_MODEL, SERVICE_OFFERING, etc.
+    class_name: Optional[str] = None
+    old_item: Optional[dict[str, Any]] = None
+    approved_name: Optional[str] = None
 
 
 class CreateQuoteRequest(BaseModel):
@@ -46,14 +44,95 @@ class CreateQuoteRequest(BaseModel):
     items: list[ApprovedItem]
 
 
-# --------------------------------------------------------------- routes
+def build_preview(body: CreateQuoteRequest) -> dict[str, Any]:
+    issues = []
+    diff = []
+
+    old_total = 0.0
+    new_total = 0.0
+
+    for i, item in enumerate(body.items):
+        old_item = item.old_item or {}
+
+        old_name = (
+            old_item.get("name")
+            or old_item.get("elementName")
+            or old_item.get("description")
+            or "Unknown"
+        )
+
+        qty = item.quantity or 0
+        old_unit_price = float(old_item.get("priceEach") or item.unit_price or 0)
+        new_unit_price = float(item.unit_price or old_unit_price or 0)
+
+        old_extended = old_unit_price * qty
+        new_extended = new_unit_price * qty
+        delta = new_extended - old_extended
+
+        old_total += old_extended
+        new_total += new_extended
+
+        if qty <= 0:
+            issues.append({
+                "level": "warning",
+                "message": f"Item {i + 1} has quantity 0",
+                "item_index": i,
+            })
+
+        if not item.element_id:
+            issues.append({
+                "level": "error",
+                "message": f"Item {i + 1} is missing a replacement item",
+                "item_index": i,
+            })
+
+        if abs(delta) > 250:
+            issues.append({
+                "level": "info",
+                "message": f"Large pricing delta detected on '{old_name}'",
+                "item_index": i,
+            })
+
+        diff.append({
+            "index": i,
+            "old_name": old_name,
+            "new_name": item.approved_name or old_name,
+            "quantity": qty,
+            "old_unit_price": old_unit_price,
+            "new_unit_price": new_unit_price,
+            "old_extended": old_extended,
+            "new_extended": new_extended,
+            "delta": delta,
+            "note": item.note,
+        })
+
+    planned_operations = [
+        f"Create Flex quote '{body.description}'",
+        "Apply quote currency",
+        f"Add {len(body.items)} approved line items",
+        "Apply quantity overrides",
+        "Validate pricing and subtotal structure",
+        "Finalize export to Flex",
+    ]
+
+    return {
+        "valid": not any(i["level"] == "error" for i in issues),
+        "issues": issues,
+        "diff": diff,
+        "planned_operations": planned_operations,
+        "totals": {
+            "old_total": round(old_total, 2),
+            "new_total": round(new_total, 2),
+            "delta": round(new_total - old_total, 2),
+        },
+    }
+
 
 @router.get("/search")
 async def search_quotes(
     q: str,
     client: FlexClient = Depends(get_flex_client),
 ):
-    """Search for Flex documents by document number or description."""
     try:
         results = await client.search_documents(q)
         return {"results": results}
@@ -68,7 +147,6 @@ async def get_source_quote(
     doc_id: str,
     client: FlexClient = Depends(get_flex_client),
 ) -> SourceQuoteResponse:
-    """Fetch a single Flex document and all its line items."""
     try:
         document = await client.get_document(doc_id)
         elements = await client.get_document_elements(doc_id)
@@ -90,16 +168,13 @@ async def match_quote_items(
     body: MatchRequest,
     flex: FlexClient = Depends(get_flex_client),
 ):
-    """
-    Fetch a source quote and resolve each line item by its resourceId via
-    managed-resource/identity. Items that still exist in inventory are matched
-    directly. Items that have been removed need manual selection.
-    """
     try:
         document = await flex.get_document(body.source_quote_id)
         elements = await flex.get_document_elements(body.source_quote_id)
 
         logger.info("Resolving %d line items by resourceId", len(elements))
+
+        resource_cache: dict[str, dict | None] = {}
 
         async def resolve(item: dict) -> dict:
             resource_id = item.get("resourceId")
@@ -112,7 +187,12 @@ async def match_quote_items(
                     "alternatives": [],
                     "needs_review": True,
                 }
-            current = await flex.get_inventory_model(resource_id)
+
+            if resource_id not in resource_cache:
+                resource_cache[resource_id] = await flex.get_inventory_model(resource_id)
+
+            current = resource_cache[resource_id]
+
             if current:
                 return {
                     "old_item": item,
@@ -122,6 +202,7 @@ async def match_quote_items(
                     "alternatives": [],
                     "needs_review": False,
                 }
+
             return {
                 "old_item": item,
                 "match": None,
@@ -147,26 +228,32 @@ async def match_quote_items(
         await flex.close()
 
 
+@router.post("/preview")
+async def preview_quote(body: CreateQuoteRequest):
+    return build_preview(body)
+
+
 @router.post("/create")
 async def create_quote(
     body: CreateQuoteRequest,
     flex: FlexClient = Depends(get_flex_client),
 ):
-    """
-    Create a new Flex document and populate it with the approved items.
-    Returns the new document id and document number.
-    """
     QUOTE_DEFINITION_ID = "9bfb850c-b117-11df-b8d5-00e08175e43e"
 
     def to_flex_datetime(date_str: str) -> str:
-        """Convert YYYY-MM-DD to Flex's expected date-time format."""
         return f"{date_str}T00:00:00" if date_str and "T" not in date_str else date_str
 
     try:
+        preview = build_preview(body)
+
+        if not preview["valid"]:
+            raise HTTPException(status_code=400, detail=preview)
+
         doc_payload: dict[str, Any] = {
             "name": body.description,
             "definitionId": QUOTE_DEFINITION_ID,
         }
+
         if body.client_id:
             doc_payload["clientId"] = body.client_id
         if body.start_date:
@@ -184,7 +271,8 @@ async def create_quote(
             )
 
         created_elements = []
-        for i, item in enumerate(body.items):
+
+        for item in body.items:
             try:
                 result = await flex.add_line_item(
                     new_doc_id,
@@ -192,7 +280,9 @@ async def create_quote(
                     quantity=item.quantity,
                     class_name=item.class_name or "INVENTORY_MODEL",
                 )
+
                 created_elements.append({"ok": True, "element": result})
+
             except FlexAPIError as e:
                 logger.warning(
                     "Failed to add element %s to doc %s: %s",
@@ -200,11 +290,13 @@ async def create_quote(
                     new_doc_id,
                     e,
                 )
+
                 created_elements.append(
                     {"ok": False, "element_id": item.element_id, "error": str(e)}
                 )
 
         failed = [e for e in created_elements if not e["ok"]]
+
         return {
             "document": new_doc,
             "document_id": new_doc_id,
