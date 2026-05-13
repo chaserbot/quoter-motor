@@ -1,6 +1,12 @@
 import clsx from "clsx";
 
-const STEPS = ["Source Quote", "Review Matches", "New Quote Details", "Push to Flex"];
+const STEPS = [
+  "Source Quote",
+  "Review Matches",
+  "New Quote Details",
+  "Diff + Validation",
+  "Push to Flex",
+];
 
 interface Props {
   current: number; // 0-indexed
@@ -8,9 +14,9 @@ interface Props {
 
 export function StepNav({ current }: Props) {
   return (
-    <div className="flex items-center gap-0 mb-8">
+    <div className="flex items-center gap-0 mb-8 overflow-x-auto pb-2">
       {STEPS.map((label, i) => (
-        <div key={i} className="flex items-center">
+        <div key={i} className="flex items-center shrink-0">
           <div className="flex flex-col items-center">
             <div
               className={clsx(
@@ -27,7 +33,11 @@ export function StepNav({ current }: Props) {
             <span
               className={clsx(
                 "text-xs mt-1 whitespace-nowrap",
-                i === current ? "text-sky-400" : i < current ? "text-emerald-500" : "text-slate-600"
+                i === current
+                  ? "text-sky-400"
+                  : i < current
+                  ? "text-emerald-500"
+                  : "text-slate-600"
               )}
             >
               {label}
