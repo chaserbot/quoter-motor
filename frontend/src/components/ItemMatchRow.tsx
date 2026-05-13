@@ -43,7 +43,7 @@ export function ItemMatchRow({ match, index, onApprove, onSetQty, onConfirm }: P
         {/* Old item */}
         <div className="min-w-0">
           <div className="text-sm text-slate-300 truncate">{itemName(old)}</div>
-          {old.elementTypeName && (
+          {!!old.elementTypeName && (
             <div className="text-xs text-slate-600 truncate">{String(old.elementTypeName)}</div>
           )}
         </div>
