@@ -1,23 +1,40 @@
 import logging
+import asyncio
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.routes import quotes, inventory, debug
+from app.config import get_settings
+from app.flex.client import FlexClient
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s — %(message)s",
 )
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Warm the element cache in the background on startup so first search is instant
+    settings = get_settings()
+    client = FlexClient(base_url=settings.flex_base_url, api_key=settings.flex_api_key)
+    asyncio.create_task(client.warm_cache(ttl=settings.inventory_cache_ttl))
+    logger.info("Cache warm-up started in background")
+    yield
+
 
 app = FastAPI(
     title="Quoter Motor",
     description="Recreate Flex quotes with current inventory and AI-matched equivalents",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Tightened in production via nginx
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
