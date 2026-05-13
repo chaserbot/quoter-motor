@@ -4,6 +4,7 @@ import { QuoteContext, useQuoteReducer } from "@/store/quoteStore";
 import { Home } from "@/pages/Home";
 import { Review } from "@/pages/Review";
 import { Details } from "@/pages/Details";
+import { Diff } from "@/pages/Diff";
 import { Success } from "@/pages/Success";
 
 const queryClient = new QueryClient();
@@ -27,6 +28,7 @@ export default function App() {
           <Route path="/" element={<Home />} />
           <Route path="/review" element={<Review />} />
           <Route path="/details" element={<Details />} />
+          <Route path="/diff" element={<Diff />} />
           <Route path="/success" element={<Success />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
