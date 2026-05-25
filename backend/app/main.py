@@ -29,7 +29,7 @@ async def lifespan(app: FastAPI):
         finally:
             await client.close()
 
-    asyncio.create_task(warm_and_close())
+    app.state.warmup_task = asyncio.create_task(warm_and_close())
     logger.info("Cache warm-up started in background")
     yield
 
