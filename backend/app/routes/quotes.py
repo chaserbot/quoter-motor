@@ -43,6 +43,8 @@ class CreateQuoteRequest(BaseModel):
     client_id: Optional[str] = None
     start_date: Optional[str] = None
     end_date: Optional[str] = None
+    default_time: Optional[Any] = None
+    default_pricing_model_id: Optional[str] = None
     items: list[ApprovedItem]
 
 
@@ -183,6 +185,19 @@ async def create_quote(
                 detail=f"Document created but no ID returned. Response: {new_doc}",
             )
 
+        if body.default_time is not None:
+            try:
+                await flex.update_header_field(new_doc_id, "defaultTime", body.default_time)
+            except FlexAPIError as e:
+                logger.warning("Failed to update defaultTime on doc %s: %s", new_doc_id, e)
+        if body.default_pricing_model_id:
+            try:
+                await flex.update_header_field(
+                    new_doc_id, "defaultPricingModelId", body.default_pricing_model_id
+                )
+            except FlexAPIError as e:
+                logger.warning("Failed to update defaultPricingModelId on doc %s: %s", new_doc_id, e)
+
         created_elements = []
         for i, item in enumerate(body.items):
             try:
@@ -192,10 +207,37 @@ async def create_quote(
                     quantity=item.quantity,
                     class_name=item.class_name or "INVENTORY_MODEL",
                 )
+                # Item was added — now apply optional field overrides.
+                # These are best-effort: if the ID is missing we log and move on
+                # rather than marking the (already-added) item as failed.
+                if item.unit_price is not None or item.note:
+                    line_item_id = flex.get_primary_line_item_id(result)
+                    if not line_item_id:
+                        logger.warning(
+                            "Added element %s but Flex returned no root line item ID — "
+                            "price/note not copied",
+                            item.element_id,
+                        )
+                    else:
+                        try:
+                            if item.unit_price is not None:
+                                await flex.update_line_item_field(
+                                    line_item_id, "priceEach", item.unit_price
+                                )
+                            if item.note:
+                                await flex.update_line_item_field(
+                                    line_item_id, "note", item.note
+                                )
+                        except FlexAPIError as e:
+                            logger.warning(
+                                "Added element %s but failed to update price/note: %s",
+                                item.element_id,
+                                e,
+                            )
                 created_elements.append({"ok": True, "element": result})
             except FlexAPIError as e:
                 logger.warning(
-                    "Failed to add element %s to doc %s: %s",
+                    "Failed to add or update element %s on doc %s: %s",
                     item.element_id,
                     new_doc_id,
                     e,

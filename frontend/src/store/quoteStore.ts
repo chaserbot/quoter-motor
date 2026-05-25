@@ -26,6 +26,11 @@ export interface QuoteState {
   createdDocNumber: string | null;
 }
 
+function dateInputValue(value: unknown): string {
+  if (typeof value !== "string" || !value) return "";
+  return value.slice(0, 10);
+}
+
 const initial: QuoteState = {
   sourceDocument: null,
   reviewed: [],
@@ -60,6 +65,8 @@ function reducer(state: QuoteState, action: Action): QuoteState {
           ? `${action.document.description} — COPY`
           : "",
         newClientId: action.document.clientId ?? "",
+        newStartDate: dateInputValue(action.document.startDateTime),
+        newEndDate: dateInputValue(action.document.endDateTime),
         reviewed: action.matches.map((m) => ({
           ...m,
           approved_element: m.match,

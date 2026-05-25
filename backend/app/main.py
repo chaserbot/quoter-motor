@@ -20,9 +20,24 @@ async def lifespan(app: FastAPI):
     # Warm the element cache in the background on startup so first search is instant
     settings = get_settings()
     client = FlexClient(base_url=settings.flex_base_url, api_key=settings.flex_api_key)
-    asyncio.create_task(client.warm_cache(ttl=settings.inventory_cache_ttl))
+    async def warm_and_close() -> None:
+        try:
+            await client.warm_cache(ttl=settings.inventory_cache_ttl)
+        except Exception:
+            logger.exception("Cache warm-up failed")
+        finally:
+            await client.close()
+
+    app.state.warmup_task = asyncio.create_task(warm_and_close())
     logger.info("Cache warm-up started in background")
-    yield
+    try:
+        yield
+    finally:
+        app.state.warmup_task.cancel()
+        try:
+            await app.state.warmup_task
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(
