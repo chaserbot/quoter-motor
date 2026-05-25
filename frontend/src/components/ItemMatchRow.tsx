@@ -1,8 +1,8 @@
 import { useState } from "react";
 import clsx from "clsx";
-import { ConfidenceBadge, confidenceColor } from "./ConfidenceBadge";
+import { ConfidenceBadge } from "./ConfidenceBadge";
 import { InventorySearch } from "./InventorySearch";
-import { itemName, itemQty, itemRate, type FlexElement } from "@/api/client";
+import { itemName, itemQty, type FlexElement } from "@/api/client";
 import type { ReviewedMatch } from "@/store/quoteStore";
 
 interface Props {
@@ -20,7 +20,6 @@ export function ItemMatchRow({ match, index, onApprove, onSetQty, onConfirm }: P
   const old = match.old_item;
   const approved = match.approved_element;
   const qty = match.override_qty ?? itemQty(old);
-  const rate = approved?.defaultPrice ?? itemRate(old);
 
   const rowBorder = match.confirmed
     ? "border-l-emerald-500"

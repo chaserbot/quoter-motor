@@ -151,7 +151,10 @@ class FlexClient:
         return unique[:50]
 
     async def get_document(self, doc_id: str) -> dict:
-        HEADER_CODES = "name,documentNumber,plannedStartDate,plannedEndDate,statusId,clientId,clientCompany,totalPrice,locationId"
+        HEADER_CODES = (
+            "name,documentNumber,plannedStartDate,plannedEndDate,statusId,clientId,"
+            "clientCompany,totalPrice,locationId,defaultTime,defaultPricingModelId"
+        )
         raw = await self._request(
             "GET",
             f"/api/element/{doc_id}/header-data",
@@ -269,12 +272,20 @@ class FlexClient:
         doc = await self._request("POST", "/api/element", json=payload)
         doc_id = doc.get("elementId") or doc.get("id")
         if doc_id:
-            await self._request(
-                "POST",
-                f"/api/element/{doc_id}/header-update",
-                json={"fieldType": "currencyId", "payloadValue": self.DEFAULT_CURRENCY_ID},
-            )
+            await self.update_header_field(doc_id, "currencyId", self.DEFAULT_CURRENCY_ID)
         return doc
+
+    async def update_header_field(
+        self,
+        document_id: str,
+        field_type: str,
+        payload_value: Any,
+    ) -> dict:
+        return await self._request(
+            "POST",
+            f"/api/element/{document_id}/header-update",
+            json={"fieldType": field_type, "payloadValue": payload_value},
+        )
 
     async def add_line_item(
         self,
@@ -291,6 +302,31 @@ class FlexClient:
                 "resourceParentId": document_id,
                 "managedResourceLineItemType": line_item_type,
                 "quantity": quantity,
+            },
+        )
+
+    def get_primary_line_item_id(self, add_resource_response: dict) -> str | None:
+        """Return the main line item ID from Flex's add-resource response."""
+        for key in ("affectedRootLineIds", "addedResourceLineIds"):
+            value = add_resource_response.get(key)
+            if isinstance(value, list) and value:
+                return str(value[0])
+            if isinstance(value, str) and value:
+                return value
+        return None
+
+    async def update_line_item_field(
+        self,
+        line_item_id: str,
+        field_type: str,
+        payload_value: Any,
+    ) -> dict:
+        return await self._request(
+            "PUT",
+            f"/api/line-item/{line_item_id}/update",
+            params={
+                "fieldType": field_type,
+                "payloadValue": payload_value,
             },
         )
 

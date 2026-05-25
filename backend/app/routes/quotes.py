@@ -43,6 +43,8 @@ class CreateQuoteRequest(BaseModel):
     client_id: Optional[str] = None
     start_date: Optional[str] = None
     end_date: Optional[str] = None
+    default_time: Optional[Any] = None
+    default_pricing_model_id: Optional[str] = None
     items: list[ApprovedItem]
 
 
@@ -183,6 +185,15 @@ async def create_quote(
                 detail=f"Document created but no ID returned. Response: {new_doc}",
             )
 
+        if body.default_time is not None:
+            await flex.update_header_field(new_doc_id, "defaultTime", body.default_time)
+        if body.default_pricing_model_id:
+            await flex.update_header_field(
+                new_doc_id,
+                "defaultPricingModelId",
+                body.default_pricing_model_id,
+            )
+
         created_elements = []
         for i, item in enumerate(body.items):
             try:
@@ -192,10 +203,37 @@ async def create_quote(
                     quantity=item.quantity,
                     class_name=item.class_name or "INVENTORY_MODEL",
                 )
-                created_elements.append({"ok": True, "element": result})
+                price_update = None
+                note_update = None
+                if item.unit_price is not None or item.note:
+                    line_item_id = flex.get_primary_line_item_id(result)
+                    if not line_item_id:
+                        raise FlexAPIError(
+                            "Flex added item but did not return a root line item ID for field updates"
+                        )
+                if item.unit_price is not None:
+                    price_update = await flex.update_line_item_field(
+                        line_item_id,
+                        "priceEach",
+                        item.unit_price,
+                    )
+                if item.note:
+                    note_update = await flex.update_line_item_field(
+                        line_item_id,
+                        "note",
+                        item.note,
+                    )
+                created_elements.append(
+                    {
+                        "ok": True,
+                        "element": result,
+                        "price_update": price_update,
+                        "note_update": note_update,
+                    }
+                )
             except FlexAPIError as e:
                 logger.warning(
-                    "Failed to add element %s to doc %s: %s",
+                    "Failed to add or update element %s on doc %s: %s",
                     item.element_id,
                     new_doc_id,
                     e,

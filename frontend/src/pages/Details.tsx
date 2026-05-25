@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuoteStore } from "@/store/quoteStore";
-import { createQuote, itemQty } from "@/api/client";
+import { createQuote, itemQty, itemRate } from "@/api/client";
 import { StepNav } from "@/components/StepNav";
 
 export function Details() {
@@ -30,9 +30,13 @@ export function Details() {
         client_id: state.newClientId || undefined,
         start_date: state.newStartDate || undefined,
         end_date: state.newEndDate || undefined,
+        default_time: state.sourceDocument.defaultTime,
+        default_pricing_model_id: flexId(state.sourceDocument.defaultPricingModelId),
         items: approvedItems.map((r, i) => ({
           element_id: r.approved_element!.id,
           quantity: r.override_qty ?? itemQty(r.old_item),
+          unit_price: itemRate(r.old_item),
+          note: (r.old_item.note as string) || undefined,
           sort_order: i,
           class_name: (r.approved_element!.className as string) ?? undefined,
         })),
@@ -164,4 +168,13 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       {children}
     </div>
   );
+}
+
+function flexId(value: unknown): string | undefined {
+  if (typeof value === "string") return value;
+  if (value && typeof value === "object" && "id" in value) {
+    const id = (value as { id?: unknown }).id;
+    return typeof id === "string" ? id : undefined;
+  }
+  return undefined;
 }
