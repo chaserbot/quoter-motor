@@ -61,6 +61,8 @@ export interface CreateQuoteRequest {
   client_id?: string;
   start_date?: string;
   end_date?: string;
+  default_time?: unknown;
+  default_pricing_model_id?: string;
   items: ApprovedItem[];
 }
 
@@ -85,12 +87,15 @@ export function itemName(item: Record<string, unknown>): string {
 }
 
 export function itemQty(item: Record<string, unknown>): number {
-  return Number(item.quantity) || 1;
+  const qty = Number(item.quantity);
+  return qty > 0 ? qty : 1;
 }
 
 export function itemRate(item: Record<string, unknown>): number | undefined {
-  const v = item.unitPrice ?? item.rate ?? item.defaultPrice;
-  return v !== undefined ? Number(v) : undefined;
+  const v = item.priceEach ?? item.unitPrice ?? item.rate ?? item.defaultPrice;
+  if (v == null) return undefined;
+  const rate = Number(v);
+  return Number.isFinite(rate) ? rate : undefined;
 }
 
 // ---------------------------------------------------------------- API calls
