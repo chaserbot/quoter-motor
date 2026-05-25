@@ -36,9 +36,9 @@ export function Details() {
           element_id: r.approved_element!.id,
           quantity: r.override_qty ?? itemQty(r.old_item),
           unit_price: itemRate(r.old_item),
-          note: (r.old_item.note as string) || undefined,
+          note: typeof r.old_item.note === "string" ? r.old_item.note : undefined,
           sort_order: i,
-          class_name: (r.approved_element!.className as string) ?? undefined,
+          class_name: typeof r.approved_element!.className === "string" ? r.approved_element!.className : undefined,
         })),
       });
 

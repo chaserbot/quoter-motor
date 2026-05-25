@@ -284,6 +284,8 @@ class FlexClient:
 
     def get_primary_line_item_id(self, add_resource_response: dict) -> str | None:
         """Return the main line item ID from Flex's add-resource response."""
+        if not isinstance(add_resource_response, dict):
+            return None
         for key in ("affectedRootLineIds", "addedResourceLineIds"):
             value = add_resource_response.get(key)
             if isinstance(value, list) and value:

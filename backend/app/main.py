@@ -30,7 +30,14 @@ async def lifespan(app: FastAPI):
 
     app.state.warmup_task = asyncio.create_task(warm_and_close())
     logger.info("Cache warm-up started in background")
-    yield
+    try:
+        yield
+    finally:
+        app.state.warmup_task.cancel()
+        try:
+            await app.state.warmup_task
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(

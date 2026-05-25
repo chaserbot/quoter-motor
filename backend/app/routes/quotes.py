@@ -186,11 +186,17 @@ async def create_quote(
             )
 
         if body.default_time is not None:
-            await flex.update_header_field(new_doc_id, "defaultTime", body.default_time)
+            try:
+                await flex.update_header_field(new_doc_id, "defaultTime", body.default_time)
+            except FlexAPIError as e:
+                logger.warning("Failed to update defaultTime on doc %s: %s", new_doc_id, e)
         if body.default_pricing_model_id:
-            await flex.update_header_field(
-                new_doc_id, "defaultPricingModelId", body.default_pricing_model_id
-            )
+            try:
+                await flex.update_header_field(
+                    new_doc_id, "defaultPricingModelId", body.default_pricing_model_id
+                )
+            except FlexAPIError as e:
+                logger.warning("Failed to update defaultPricingModelId on doc %s: %s", new_doc_id, e)
 
         created_elements = []
         for i, item in enumerate(body.items):
@@ -213,13 +219,20 @@ async def create_quote(
                             item.element_id,
                         )
                     else:
-                        if item.unit_price is not None:
-                            await flex.update_line_item_field(
-                                line_item_id, "priceEach", item.unit_price
-                            )
-                        if item.note:
-                            await flex.update_line_item_field(
-                                line_item_id, "note", item.note
+                        try:
+                            if item.unit_price is not None:
+                                await flex.update_line_item_field(
+                                    line_item_id, "priceEach", item.unit_price
+                                )
+                            if item.note:
+                                await flex.update_line_item_field(
+                                    line_item_id, "note", item.note
+                                )
+                        except FlexAPIError as e:
+                            logger.warning(
+                                "Added element %s but failed to update price/note: %s",
+                                item.element_id,
+                                e,
                             )
                 created_elements.append({"ok": True, "element": result})
             except FlexAPIError as e:
