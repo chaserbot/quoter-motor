@@ -93,7 +93,7 @@ export function itemQty(item: Record<string, unknown>): number {
 
 export function itemRate(item: Record<string, unknown>): number | undefined {
   const v = item.priceEach ?? item.unitPrice ?? item.rate ?? item.defaultPrice;
-  if (v === undefined) return undefined;
+  if (v == null) return undefined;
   const rate = Number(v);
   return Number.isFinite(rate) ? rate : undefined;
 }
